@@ -1,0 +1,119 @@
+---
+title: "global"
+author: "Anna Orteu"
+date: "2023-11-12"
+output: html_document
+---
+
+```{r}
+library(data.table)
+library(dplyr)
+library(stringi)
+library(stringr)
+library(ggplot2)
+library(tidyr)
+```
+
+
+```{r}
+dd <- fread("consumo_material_clean.csv", col.names = c("codigo", "fechapedido", "numero", "referencia", "cantidadcompra", "unidadesconsumocontenidas", "precio", "importelinea", "tipocompra", "origen", "tgl", "producto"))
+dd$fechapedido <- as.Date(dd$fechapedido, format = "%d/%m/%y")
+#dd$preuquantitat <- dd$precio*dd$cantidadcompra # és el mateix que "importelinea" pero ben calculat
+dd[dd$tgl == "", "tgl"] <- "Sin distribución"
+dd$tgl <- as.factor(dd$tgl)
+dd$tipocompra <- as.factor(dd$tipocompra)
+dd$monthyear <- format(dd$fechapedido, "%Y-%m")
+dd$year <- format(dd$fechapedido, "%Y")
+#dd$year <- as.Date(paste(dd$year, "-01-01", sep = ""), format = "%Y-%m-%d")
+dd$month <- as.factor(format(dd$fechapedido, "%m"))
+dd[,c('regio', 'hospital', "departament")] <- as.data.frame(str_split_fixed(dd$origen, "-",3))
+dd$classification <- substr(dd$codigo, 1, 1)
+```
+
+Manipulació prèvia
+
+```{r}
+aux <- dd[,c("codigo", "unidadesconsumocontenidas", "precio", "monthyear")]
+aux <- aux[!duplicated(aux), ]
+aux <- aux %>% group_by(codigo, monthyear) %>% mutate(tipologies = n_distinct(unidadesconsumocontenidas)) # tipologies = nombre de unidades que existeixen diferents
+aux2 <- aux %>% group_by(codigo, monthyear) %>%   arrange(desc(unidadesconsumocontenidas)) # Fa que les files estiguin ordenades de gran a petit (de quantitat de unidades)
+```
+
+Si les prediccions són pel futur, simplement ens haurem de quedar amb els preus dels últims mesos
+
+```{r}
+aux <- dd[,c("codigo", "unidadesconsumocontenidas", "precio", "year", "monthyear")]
+aux <- aux[aux$year == "2023",]
+aux <- aux %>% group_by(codigo, unidadesconsumocontenidas) %>% arrange(desc(monthyear)) %>% slice(1)
+aux$monthyear <- NULL
+#aux <- aux[!duplicated(aux), ]
+aux <- aux %>% group_by(codigo) %>% mutate(tipologies = n_distinct(unidadesconsumocontenidas)) # tipologies = nombre de unidades que existeixen diferents
+aux2 <- aux %>% group_by(codigo) %>%   arrange(desc(unidadesconsumocontenidas)) # Fa que les files estiguin ordenades de gran a petit (de quantitat de unidades)
+```
+
+Purchase plan 2023 final
+
+
+```{r}
+exemple <- read.csv("dades.csv") #previsions que contenen monthyear, codigo i prediccio (importelinea)
+exemple$quantitat_gran <- 0
+exemple$quantitat_median <- 0
+exemple$quantitat_petit <- 0
+```
+
+
+```{r}
+for(i in 1:nrow(exemple)) {
+  mesany <- exemple[i,"monthyear"]
+  producte <- exemple[i,"codigo"]
+  reg <- aux2[aux2$codigo == producte,]
+  quantitatprod <- unique(reg[,"tipologies"])
+  if(quantitatprod == 1) {
+    exemple[i,"quantitat_gran"] <- ceiling(exemple[i,"prediccio"]/reg[, "precio"])
+  } else if(quantitatprod == 2) {
+    exemple[i,"quantitat_gran"] <- ceiling(exemple[i,"prediccio"]/reg[1,"precio"])
+    if(exemple[i,"quantitat_gran"] == 0) {
+        exemple[i,"quantitat_petit"] <- ceiling(queden/reg[2,"precio"])
+    }
+    if(exemple[i,"quantitat_petit"] == 0) exemple[i,"quantitat_petit"] = 1
+  } else { # quantitatprod == 3
+    exemple[i,"quantitat_gran"] <- floor(exemple[i,"prediccio"]/reg[1,"precio"])
+    if(exemple[i,"quantitat_gran"] == 0) {
+      exemple[i,"quantitat_median"] <- ceiling(queden/reg[2,"precio"])
+    }
+    if(exemple[i,"quantitat_median"] == 0) {
+      exemple[i,"quantitat_petit"] <- floor(queden/reg[3,"precio"])
+    }
+    if(exemple[i,"quantitat_petit"] == 0) exemple[i,"quantitat_petit"] = 1
+  }
+}
+```
+
+```{r}
+codis <- unique(exemple$codigo)
+```
+
+
+```{r}
+for(codi in codis) {
+  a <- ggplot(exemple[exemple$codigo == codi,], aes(x = monthyear, y = prediccio, group = 1)) + geom_point() + geom_line() + xlab ("Year-Month") + ylab("Total import") + ggtitle(exemple[exemple$codigo == codi,"codigo"]) +scale_y_continuous(limits = c(0, max(exemple[exemple$codigo == codi,"prediccio"]))) 
+
+  g <- exemple[exemple$codigo == codi,c("monthyear", "quantitat_gran", "quantitat_median", "quantitat_petit")] %>% pivot_longer(!monthyear, names_to = "Type", values_to = "count")
+  if(sum(g[g$Type == "quantitat_median", "count"]) == 0) {
+    g <- g[g$Type!= "quantitat_median",]
+    rep <- nrow(g)
+    tt <- rep(unlist(aux2[aux2$codigo == codi, "unidadesconsumocontenidas"]),rep/2)
+  }
+  if(sum(g[g$Type == "quantitat_petit", "count"]) == 0) {
+    g <- g[g$Type!= "quantitat_petit",]
+    rep <- nrow(g)
+    tt <- rep(unlist(aux2[aux2$codigo == codi, "unidadesconsumocontenidas"]),rep)
+  }
+    g$Type  <- tt
+  g$Type <- as.character(g$Type)
+  b <- ggplot(g, aes(x = monthyear, y = count, group = Type, color = Type)) + geom_point() + geom_line() + xlab ("Year-Month") + ylab("Quantities bought") + ggtitle(exemple[exemple$codigo == codi,"codigo"]) +scale_y_continuous(limits = c(0, max(g$count))) 
+  ggsave(paste0(codi,"import.png"), a)
+  ggsave(paste0(codi,"quantities.png"), b)
+}
+```
+

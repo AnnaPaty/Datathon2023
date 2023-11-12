@@ -1,0 +1,176 @@
+---
+title: "Problema3"
+author: "Anna Orteu"
+date: "2023-11-11"
+output: html_document
+---
+
+```{r}
+library(data.table)
+library(dplyr)
+library(stringi)
+library(tidyr)
+library(ggplot2)
+```
+
+
+
+```{r}
+dd <- fread("consumo_material_clean.csv", col.names = c("codigo", "fechapedido", "numero", "referencia", "cantidadcompra", "unidadesconsumocontenidas", "precio", "importelinea", "tipocompra", "origen", "tgl", "producto"))
+dd$fechapedido <- as.Date(dd$fechapedido, format = "%d/%m/%y")
+#dd$preuquantitat <- dd$precio*dd$cantidadcompra # és el mateix que "importelinea" pero ben calculat
+dd[dd$tgl == "", "tgl"] <- "Sin distribución"
+dd$tgl <- as.factor(dd$tgl)
+dd$tipocompra <- as.factor(dd$tipocompra)
+dd$monthyear <- format(dd$fechapedido, "%Y-%m")
+dd$year <- format(dd$fechapedido, "%Y")
+dd$year <- as.Date(paste(dd$year, "-01-01", sep = ""), format = "%Y-%m-%d")
+dd$month <- as.factor(format(dd$fechapedido, "%m"))
+dd[,c('regio', 'hospital', "departament")] <- as.data.frame(str_split_fixed(dd$origen, "-",3))
+dd$classification <- substr(dd$codigo, 1, 1)
+```
+
+
+Viatges que ens podem estavliar si ajuntem els viatges dels hospitals d'una mateixa regió i mateix producte per dia. Aquest sistema està assumint que els camions són infinits, perquè no tenim la seva capacitat
+
+```{r}
+df <- dd[,c("codigo", "hospital", "regio", "fechapedido", "cantidadcompra")]
+df_g <- df %>% group_by(regio, codigo, fechapedido) %>% summarise(cantidadtotal = sum(cantidadcompra), hospitals = n_distinct(hospital))
+```
+
+```{r}
+# S'està dient que hi ha 87 rutes que es podrien haver ajuntat si 3 hospitals haguèssin compartit recursos
+table(df_g$hospitals)
+```
+
+```{r}
+aux <- as.data.frame(table(df_g$hospitals))
+aux[aux$Var1 == 1, "Freq"] <- 0
+sum(aux$Freq) # Número de viatges en total que es podrien haver ajuntat 
+```
+
+```{r}
+aux$Var1 <- as.numeric(aux$Var1)
+aux$estalviat <- aux$Freq*(aux$Var1-1)
+# Número de viatges que es podrien haver estalviat
+sum(aux$estalviat)
+```
+
+```{r}
+df_g$year <- substr(df_g$fechapedido, 1, 4)
+table(df_g$year, df_g$hospitals)
+```
+
+```{r}
+aux <- as.data.frame(table(df_g$year, df_g$hospitals))
+aux$Var2 <- as.numeric(aux$Var2)
+aux$estalviat <- aux$Freq*(aux$Var2-1)
+# Número de viatges que es podrien haver estalviat
+final <- aux %>% group_by(Var1) %>% summarise(viatgesestalviats = sum(estalviat))
+final$Var1a <- as.character(final$Var1)
+plot(final$Var1a, final$viatgesestalviats, type = "l", xlab = "Years", ylab = "Trips that could have been saved")
+points(final$Var1a, final$viatgesestalviats, col = "blue", pch = 19)
+```
+
+
+També podríem considerar que els articles de diferents tipologies podrien anar en un mateix camió, encara que siguin diferents si són del mateix hospital i departament
+
+```{r}
+df <- dd[,c("codigo", "hospital", "fechapedido", "cantidadcompra", "departament")]
+df_g2 <- df %>% group_by(hospital, fechapedido, departament) %>% summarise(cantidadtotal = sum(cantidadcompra), productes = n_distinct(codigo))
+table(df_g2$productes)
+```
+
+```{r}
+aux <- as.data.frame(table(df_g2$productes))
+aux[aux$Var1 == 1, "Freq"] <- 0
+sum(aux$Freq) # Número de viatges en total que es podrien haver ajuntat 
+```
+```{r}
+aux$Var1 <- as.numeric(aux$Var1)
+aux$estalviat <- aux$Freq*(aux$Var1-1)
+# Número de viatges que es podrien haver estalviat
+sum(aux$estalviat)
+```
+
+```{r}
+df_g2$year <- substr(df_g2$fechapedido, 1, 4)
+table(df_g2$year, df_g2$productes)
+```
+
+```{r}
+aux <- as.data.frame(table(df_g2$year, df_g2$productes))
+aux$Var2 <- as.numeric(aux$Var2)
+aux$estalviat <- aux$Freq*(aux$Var2-1)
+# Número de viatges que es podrien haver estalviat
+final <- aux %>% group_by(Var1) %>% summarise(viatgesestalviats = sum(estalviat))
+final$Var1 <- as.character(final$Var1)
+plot(final$Var1, final$viatgesestalviats, type = "l", xlab = "Years", ylab = "Trips that could have been saved")
+points(final$Var1, final$viatgesestalviats, col = "blue", pch = 19)
+```
+
+També podríem considerar que els articles de diferents tipologies podrien anar en un mateix camió, encara que siguin diferents si són de la mateixa regió i departament (podent ser de diferents hospitals) --> no sé si fer-ho xq el repartiment seria molt dificil
+
+
+Comprar coses amb més unidadesconsumocontenidas i reduir el número de demandes
+
+```{r}
+# Detectem produtes que realment tinguin diferents unidadesconsumocontenidas
+df <- dd
+df_g3 <- df %>% group_by(codigo) %>% summarise(diferents = n_distinct(unidadesconsumocontenidas))
+diferents_unidades <- df_g3[df_g3$diferents > 1, "codigo"]
+mateixes_unidades <- df_g3[df_g3$diferents == 1, "codigo"]
+mateixes_unidades$eliminar <- 1
+df_g4 <- left_join(df, mateixes_unidades, by = "codigo")
+df_g5 <- df_g4[is.na(df_g4$eliminar),] # Dataset amb els registres de codis que canvien de unidadesconsumocontenidas
+```
+
+```{r}
+df_g8 <- df_g5 %>% group_by(codigo,monthyear,unidadesconsumocontenidas) %>% summarise(tt = sum(cantidadcompra))
+df_g9 <- df_g8 %>% pivot_wider(names_from = unidadesconsumocontenidas, values_from = tt) # dataset de la llibreta final
+```
+
+```{r}
+diferents_unidades <- left_join(diferents_unidades, dd[,c("codigo", "producto")], by = "codigo")
+diferents_unidades <- diferents_unidades[!duplicated(diferents_unidades), ]
+```
+
+
+```{r}
+for(codi in diferents_unidades$codigo) {
+  df_g10 <- df_g9[df_g9$codigo == codi,]
+  a <- df_g10[,colSums(is.na(df_g10))<nrow(df_g10)] # Remove columns with NA's
+  if(ncol(a) == 4) {
+    max_value <- max(as.numeric(colnames(a[,3:4])))
+    min_value <- min(as.numeric(colnames(a[,3:4])))
+    max_position <- which(colnames(a) == as.character(max_value))
+    min_position <- which(colnames(a) == as.character(min_value))
+    a$unidades <- min_value*a[,min_position] # seria el 250
+    a$divison <- a$unidades/max_value # seria el 2,5
+    a$unidadesgrande <- floor(a$divison) # és el 2 paquets
+    a$unidadespequenas <- ceiling((a$unidades - (a$unidadesgrande*max_value))/min_value) # és el 10 paquets
+    a$paquetstotals <- a$unidadesgrande + a$unidadespequenas # és el 12
+    a$paquetsestalviats <- unlist(a[,min_position] - a$paquetstotals)
+  } else { # ncol(a) == 5 --> hi ha 3 possibilitats de unidadesconsumocontenidas
+    max_value <- max(as.numeric(colnames(a[,3:5])))
+    median_value <- median(as.numeric(colnames(a[,3:5])))
+    min_value <- min(as.numeric(colnames(a[,3:5])))
+    max_position <- which(colnames(a) == as.character(max_value))
+    median_position <- which(colnames(a) == as.character(median_value))
+    min_position <- which(colnames(a) == as.character(min_value))
+    a[is.na(a)] <- 0 # Simplement xq faci la operació de la següent línia bé
+    a$unidades <- min_value*a[,min_position] + median_value*a[,median_position] # seria el 250
+    a$divison <- a$unidades/max_value # seria el 2,5
+    a$unidadesgrande <- floor(a$divison) # és el 2 paquets
+    a$unidadesmedianas <- ceiling((a$unidades - (a$unidadesgrande*max_value))/median_value)
+    a$unidadespequenas <- ceiling((a$unidades - (a$unidadesgrande*max_value + a$unidadesmedianas*median_value))/min_value)
+    a$paquetstotals <- a$unidadesgrande + a$unidadesmedianas+ a$unidadespequenas # és el 12
+    a$paquetsestalviats <- unlist(a[,min_position] + a[,median_position] - a$paquetstotals)
+  }
+  plotx <- ggplot(a, aes(x = monthyear, y = paquetsestalviats)) + geom_bar(stat = "identity") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + xlab("Year-month") + ylab("Trips that could have been saved") + ggtitle(iconv(diferents_unidades[diferents_unidades$codigo == codi, "producto"], from = "latin1", to = "UTF-8", sub = "byte"))
+  print(plotx)
+  ggsave(paste0(codi,".png"), plotx)
+}
+```
+
+
